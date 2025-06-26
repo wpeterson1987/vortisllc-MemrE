@@ -1,0 +1,2 @@
+C:/Users/Warren/Vortis/memre/android/app/.cxx/RelWithDebInfo/445r2h30/arm64-v8a/CMakeFiles/edit_cache.dir
+C:/Users/Warren/Vortis/memre/android/app/.cxx/RelWithDebInfo/445r2h30/arm64-v8a/CMakeFiles/rebuild_cache.dir

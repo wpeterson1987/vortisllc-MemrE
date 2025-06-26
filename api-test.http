@@ -1,0 +1,8 @@
+### Login and get JWT token
+POST https://memre.vortisllc.com/wp-json/jwt-auth/v1/token
+Content-Type: application/json
+
+{
+  "username": "warren",
+  "password": "123Se$$ion45%"
+}
