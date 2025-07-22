@@ -1,5 +1,5 @@
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart'; // Add this line for Color class
+import 'package:flutter/material.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'auth_service.dart';
@@ -241,7 +241,7 @@ class SubscriptionProvider with ChangeNotifier {
     };
   }
 
-  // Updated: Get URL for subscription upgrade using new API
+  // UPDATED: Get URL for subscription management (EXTERNAL WEBSITE ONLY)
   Future<String> getSubscriptionUpgradeUrl() async {
     try {
       final userId = await _authService.getLoggedInUserId();
@@ -249,25 +249,39 @@ class SubscriptionProvider with ChangeNotifier {
         throw Exception('User not logged in');
       }
 
-      final url = '$baseUrl/user/$userId/upgrade-url';
-      final headers = await _getAuthHeaders();
-
-      final response = await http.get(
-        Uri.parse(url),
-        headers: headers,
-      );
-
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        return data['upgrade_url'] ?? 'https://memre.vortisllc.com/account/';
-      } else {
-        // Fallback to default URL
-        return 'https://memre.vortisllc.com/account/';
-      }
+      // Always return the website URL - no in-app payment processing
+      final baseWebsiteUrl = 'https://memre.vortisllc.com/account/';
+      
+      // Add parameters to help with user experience
+      final websiteUrl = '$baseWebsiteUrl?source=ios_app&user_id=$userId&action=upgrade';
+      
+      return websiteUrl;
     } catch (e) {
       print('Error getting upgrade URL: $e');
       // Fallback to default URL
-      return 'https://memre.vortisllc.com/account/';
+      return 'https://memre.vortisllc.com/account/?source=ios_app&action=upgrade';
+    }
+  }
+
+  // NEW: Get account management URL (for existing subscribers)
+  Future<String> getAccountManagementUrl() async {
+    try {
+      final userId = await _authService.getLoggedInUserId();
+      if (userId == null) {
+        throw Exception('User not logged in');
+      }
+
+      // Always return the website URL for account management
+      final baseWebsiteUrl = 'https://memre.vortisllc.com/account/';
+      
+      // Add parameters to help with user experience
+      final websiteUrl = '$baseWebsiteUrl?source=ios_app&user_id=$userId&action=manage';
+      
+      return websiteUrl;
+    } catch (e) {
+      print('Error getting account management URL: $e');
+      // Fallback to default URL
+      return 'https://memre.vortisllc.com/account/?source=ios_app&action=manage';
     }
   }
 
@@ -290,10 +304,21 @@ class SubscriptionProvider with ChangeNotifier {
     return 'normal';
   }
 
-  // New: Get appropriate call-to-action text
+  // UPDATED: Get appropriate call-to-action text (Apple compliant)
   String get ctaText {
-    if (premiumActive) return 'Manage Subscription';
-    if (trialActive) return 'Upgrade to Premium';
-    return 'Subscribe Now';
+    if (premiumActive) return 'Manage on Website';
+    if (trialActive) return 'Subscribe on Website';
+    return 'Subscribe on Website';
+  }
+
+  // NEW: Get compliance-friendly button text
+  String get subscriptionButtonText {
+    if (premiumActive) {
+      return 'Manage Subscription on Website';
+    } else if (trialActive) {
+      return 'Subscribe on Website - \$8.99/month';
+    } else {
+      return 'Subscribe on Website - \$8.99/month';
+    }
   }
 }

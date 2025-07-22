@@ -56,24 +56,23 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       if (provider.requiresUpgrade()) ...[
-                        // Subscribe button for users who need to upgrade
-                        ElevatedButton.icon(
-                          icon: const Icon(Icons.star),
-                          label: const Text('Subscribe for \$8.99/month'),
-                          onPressed: () => _openSubscriptionPage(context),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.blue,
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                            textStyle: const TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
+                        // Website subscription button
+                        _buildSubscribeButton(context),
                         const SizedBox(height: 12),
                         Text(
-                          'Get unlimited access to all MemrE features',
+                          'Subscription management is handled on our website for security and convenience.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: Colors.grey[600],
+                            fontSize: 14,
+                          ),
+                        ),
+                      ] else ...[
+                        // Manage subscription button for existing subscribers
+                        _buildManageSubscriptionButton(context),
+                        const SizedBox(height: 12),
+                        Text(
+                          'Access your subscription settings and billing information.',
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             color: Colors.grey[600],
@@ -81,7 +80,6 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
                           ),
                         ),
                       ],
-                      // Removed the "Manage Subscription" button section entirely
 
                       const SizedBox(height: 24),
 
@@ -98,6 +96,40 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
               ],
             );
           },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSubscribeButton(BuildContext context) {
+    return ElevatedButton.icon(
+      icon: const Icon(Icons.open_in_browser),
+      label: const Text('Subscribe on Our Website - \$8.99/month'),
+      onPressed: () => _openSubscriptionWebsite(context),
+      style: ElevatedButton.styleFrom(
+        backgroundColor: Colors.blue,
+        foregroundColor: Colors.white,
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        textStyle: const TextStyle(
+          fontSize: 18,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildManageSubscriptionButton(BuildContext context) {
+    return ElevatedButton.icon(
+      icon: const Icon(Icons.open_in_browser),
+      label: const Text('Manage Subscription on Website'),
+      onPressed: () => _openAccountManagement(context),
+      style: ElevatedButton.styleFrom(
+        backgroundColor: Colors.green,
+        foregroundColor: Colors.white,
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        textStyle: const TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.bold,
         ),
       ),
     );
@@ -188,6 +220,15 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
                     'Unlimited access to all MemrE features',
                     style: TextStyle(color: Colors.green.shade700),
                   ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Secure payment processing via our website',
+                    style: TextStyle(
+                      color: Colors.green.shade600,
+                      fontSize: 12,
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -210,12 +251,16 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
             ),
             const SizedBox(height: 16),
             _buildFaqItem(
+              'Why do I need to subscribe on the website?',
+              'For security and convenience, all subscription management is handled through our secure website. This ensures your payment information is protected and gives you access to detailed billing history.',
+            ),
+            _buildFaqItem(
               'What happens after my free trial?',
-              'After your 14-day free trial ends, you\'ll need to subscribe for \$8.99/month to continue using MemrE. Your data will be preserved.',
+              'After your 14-day free trial ends, you\'ll need to subscribe for \$8.99/month on our website to continue using MemrE. Your data will be preserved.',
             ),
             _buildFaqItem(
               'Can I cancel anytime?',
-              'Yes, you can cancel your subscription at any time through your account page. You\'ll continue to have access until the end of your billing period.',
+              'Yes, you can cancel your subscription at any time through your account page on our website. You\'ll continue to have access until the end of your billing period.',
             ),
             _buildFaqItem(
               'Are SMS messages really free?',
@@ -257,7 +302,7 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
     );
   }
 
-  void _openSubscriptionPage(BuildContext context) async {
+  void _openSubscriptionWebsite(BuildContext context) async {
     try {
       final provider =
           Provider.of<SubscriptionProvider>(context, listen: false);
@@ -266,14 +311,32 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
       if (await canLaunchUrl(Uri.parse(url))) {
         await launchUrl(
           Uri.parse(url),
-          mode: LaunchMode.inAppWebView,
-          webViewConfiguration: const WebViewConfiguration(
-            enableJavaScript: true,
-          ),
+          mode: LaunchMode.externalApplication, // Changed to external browser
         );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Could not open subscription page')),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e')),
+      );
+    }
+  }
+
+  void _openAccountManagement(BuildContext context) async {
+    try {
+      const url = 'https://memre.vortisllc.com/account/';
+
+      if (await canLaunchUrl(Uri.parse(url))) {
+        await launchUrl(
+          Uri.parse(url),
+          mode: LaunchMode.externalApplication, // Changed to external browser
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not open account management page')),
         );
       }
     } catch (e) {
