@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:url_launcher/url_launcher.dart';
+// REMOVE THIS: import 'package:url_launcher/url_launcher.dart';
+import 'webview_login_screen.dart'; // ADD THIS
 import '../services/auth_service.dart';
 import 'memo_screen.dart';
 import 'package:provider/provider.dart';
@@ -136,25 +137,59 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  Future<void> _openUrl(String url) async {
+  // REPLACE THE _openUrl METHOD WITH THIS WEBVIEW METHOD:
+  Future<void> _openWebViewUrl(String url) async {
+    setState(() {
+      _isLoading = true;
+    });
+
     try {
-      if (await canLaunchUrl(Uri.parse(url))) {
-        await launchUrl(
-          Uri.parse(url),
-          mode: LaunchMode.externalApplication,
-        );
-      } else {
-        if (mounted) {
+      final result = await Navigator.of(context).push<Map<String, dynamic>>(
+        MaterialPageRoute(
+          builder: (context) => WebViewLoginScreen(
+            initialUrl: url, // Pass the URL to the WebView
+          ),
+        ),
+      );
+
+      if (result != null && result['success'] == true) {
+        // Check if this was a registration that resulted in login
+        final userId = await _authService.getLoggedInUserId();
+        if (userId != null && mounted) {
+          final subscriptionProvider =
+              Provider.of<SubscriptionProvider>(context, listen: false);
+          await subscriptionProvider.clearState();
+          await subscriptionProvider.init();
+          await subscriptionProvider.refreshSubscriptionData();
+          
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (context) => MemoScreen(userId: userId),
+            ),
+          );
+        } else {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Could not open $url')),
+            const SnackBar(
+              content: Text('Action completed successfully'),
+              backgroundColor: Colors.green,
+            ),
           );
         }
       }
     } catch (e) {
+      print('WebView error: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error: ${e.toString()}'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error opening link: $e')),
-        );
+        setState(() {
+          _isLoading = false;
+        });
       }
     }
   }
@@ -266,13 +301,13 @@ class _LoginScreenState extends State<LoginScreen> {
                   // Add more spacing between login button and new buttons
                   const SizedBox(height: 48),
 
-                  // New User Registration button
+                  // UPDATED: New User Registration button (now uses WebView)
                   SizedBox(
                     width: double.infinity,
                     height: 48,
                     child: OutlinedButton.icon(
-                      onPressed: () =>
-                          _openUrl('https://memre.vortisllc.com/register'),
+                      onPressed: _isLoading ? null : () =>
+                          _openWebViewUrl('https://memre.vortisllc.com/register'),
                       icon: const Icon(Icons.person_add),
                       label: const Text('New User Registration'),
                       style: OutlinedButton.styleFrom(
@@ -283,13 +318,13 @@ class _LoginScreenState extends State<LoginScreen> {
 
                   const SizedBox(height: 16),
 
-                  // App Training button
+                  // UPDATED: App Training button (now uses WebView)
                   SizedBox(
                     width: double.infinity,
                     height: 48,
                     child: OutlinedButton.icon(
-                      onPressed: () =>
-                          _openUrl('https://memre.vortisllc.com/training'),
+                      onPressed: _isLoading ? null : () =>
+                          _openWebViewUrl('https://memre.vortisllc.com/training'),
                       icon: const Icon(Icons.school),
                       label: const Text('App Training'),
                       style: OutlinedButton.styleFrom(

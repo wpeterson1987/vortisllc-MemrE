@@ -5,6 +5,7 @@ import '../services/database_service.dart';
 import '../services/auth_service.dart';
 import 'login_screen.dart';
 import 'memo_input_screen.dart';
+import 'account_deletion_screen.dart'; // ADD THIS IMPORT
 import 'package:intl/intl.dart';
 import '../services/shared_content_handler.dart';
 import 'package:path_provider/path_provider.dart';
@@ -310,6 +311,74 @@ class _MemoScreenState extends State<MemoScreen> with WidgetsBindingObserver {
           ],
         );
       },
+    );
+  }
+
+  // ADD THESE NEW METHODS FOR ACCOUNT DELETION:
+  void _showAccountDeletionDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.warning, color: Colors.red),
+              SizedBox(width: 8),
+              Text('Delete Account'),
+            ],
+          ),
+          content: const Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Are you sure you want to delete your account?',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              SizedBox(height: 16),
+              Text('This will permanently delete:'),
+              SizedBox(height: 8),
+              Text('• All your memos and reminders'),
+              Text('• All attachments and files'),
+              Text('• Your account and profile'),
+              Text('• Your subscription (if active)'),
+              SizedBox(height: 16),
+              Text(
+                'This action cannot be undone.',
+                style: TextStyle(
+                  color: Colors.red,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                _navigateToAccountDeletion();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Delete Account'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _navigateToAccountDeletion() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => const AccountDeletionScreen(),
+      ),
     );
   }
 
@@ -766,9 +835,40 @@ class _MemoScreenState extends State<MemoScreen> with WidgetsBindingObserver {
                   );
                 },
               ),
-              IconButton(
-                icon: const Icon(Icons.logout),
-                onPressed: _handleLogout,
+              // UPDATED: Menu with logout and account deletion
+              PopupMenuButton<String>(
+                onSelected: (value) {
+                  switch (value) {
+                    case 'logout':
+                      _handleLogout();
+                      break;
+                    case 'delete_account':
+                      _showAccountDeletionDialog();
+                      break;
+                  }
+                },
+                itemBuilder: (context) => [
+                  const PopupMenuItem(
+                    value: 'logout',
+                    child: Row(
+                      children: [
+                        Icon(Icons.logout, size: 20),
+                        SizedBox(width: 8),
+                        Text('Logout'),
+                      ],
+                    ),
+                  ),
+                  const PopupMenuItem(
+                    value: 'delete_account',
+                    child: Row(
+                      children: [
+                        Icon(Icons.delete_forever, size: 20, color: Colors.red),
+                        SizedBox(width: 8),
+                        Text('Delete Account', style: TextStyle(color: Colors.red)),
+                      ],
+                    ),
+                  ),
+                ],
               ),
             ],
           ),

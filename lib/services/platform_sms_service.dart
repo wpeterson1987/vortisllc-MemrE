@@ -1,5 +1,11 @@
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'dart:convert';
+import 'dart:typed_data';
+import '../services/email_service.dart';
+import '../services/attachment_storage_service.dart';
+import '../models/memo_models.dart';
 
 class PlatformSMSService {
   static const MethodChannel _channel =
@@ -10,38 +16,73 @@ class PlatformSMSService {
       final bool result = await _channel.invokeMethod('canSendSMS');
       return result;
     } on PlatformException catch (e) {
-      print('Failed to check SMS capability: ${e.message}');
+      print('Error checking SMS capability: $e');
+      return false;
+    } on MissingPluginException catch (e) {
+      print('SMS plugin not implemented: $e');
       return false;
     }
   }
 
+  // FIXED: Updated method signature to match your existing calls
   static Future<bool> sendSMS({
-    required String to,
+    List<String>? recipients,
+    String? to, // For single recipient calls
     required String message,
   }) async {
+    // Handle both single recipient and multiple recipients
+    List<String> finalRecipients = [];
+    if (recipients != null && recipients.isNotEmpty) {
+      finalRecipients = recipients;
+    } else if (to != null && to.isNotEmpty) {
+      finalRecipients = [to];
+    } else {
+      print('No recipients provided for SMS');
+      return false;
+    }
+
     try {
-      print('=== PLATFORM SMS DEBUG START ===');
-      print('Phone: $to');
-      print('Message: $message');
+      // Check if we can send SMS via platform channel
+      if (await canSendSMS()) {
+        final bool result = await _channel.invokeMethod('sendSMS', {
+          'recipients': finalRecipients,
+          'message': message,
+        });
+        return result;
+      } else {
+        // Fallback to URL scheme
+        return await _sendSMSViaURL(finalRecipients, message);
+      }
+    } on PlatformException catch (e) {
+      print('Platform SMS error: $e');
+      return await _sendSMSViaURL(finalRecipients, message);
+    } on MissingPluginException catch (e) {
+      print('SMS plugin missing, using URL fallback: $e');
+      return await _sendSMSViaURL(finalRecipients, message);
+    } catch (e) {
+      print('Unexpected SMS error: $e');
+      return await _sendSMSViaURL(finalRecipients, message);
+    }
+  }
 
-      // First check if SMS is available
-      bool canSend = await canSendSMS();
-      print('Can send SMS: $canSend');
-
-      if (!canSend) {
-        print('SMS not available on this device');
+  static Future<bool> _sendSMSViaURL(List<String> recipients, String message) async {
+    try {
+      // Use URL scheme as fallback
+      final String recipientString = recipients.join(',');
+      final String encodedMessage = Uri.encodeComponent(message);
+      final String smsUrl = 'sms:$recipientString?body=$encodedMessage';
+      
+      final Uri uri = Uri.parse(smsUrl);
+      
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri);
+        return true;
+      } else {
+        print('Cannot launch SMS URL: $smsUrl');
         return false;
       }
-
-      final bool result = await _channel.invokeMethod('sendSMS', {
-        'phone': to,
-        'message': message,
-      });
-
-      print('Platform SMS result: $result');
-      return result;
-    } on PlatformException catch (e) {
-      print('Failed to send SMS: ${e.message}');
+    } catch (e) {
+      print('Error sending SMS via URL: $e');
       return false;
     }
   }
@@ -138,6 +179,247 @@ class PlatformSMSService {
     return await _processSMSQueue();
   }
 
+  // SMART QUEUE METHODS:
+
+  // Smart queue approach that's more user-friendly
+  static Future<Map<String, bool>> sendBulkSMSWithSmartQueue({
+    required List<String> recipients,
+    required String message,
+  }) async {
+    final results = <String, bool>{};
+
+    if (recipients.isEmpty) {
+      print('No recipients provided for smart queue SMS');
+      return results;
+    }
+
+    print('=== SMART QUEUE SMS START ===');
+    print('Recipients: ${recipients.length}');
+
+    // Process first SMS immediately
+    if (recipients.isNotEmpty) {
+      final firstRecipient = recipients[0];
+      print('📱 Opening SMS for recipient 1 of ${recipients.length}: $firstRecipient');
+      
+      final success = await sendSMS(to: firstRecipient, message: message);
+      results[firstRecipient] = success;
+      
+      if (success) {
+        print('✅ First SMS opened successfully');
+      } else {
+        print('❌ First SMS failed to open');
+      }
+    }
+
+    // If there are more recipients, save them to the queue for later processing
+    if (recipients.length > 1) {
+      final remainingRecipients = recipients.sublist(1);
+      
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList('sms_smart_queue_recipients', remainingRecipients);
+      await prefs.setString('sms_smart_queue_message', message);
+      await prefs.setInt('sms_smart_queue_current_index', 0);
+      await prefs.setBool('sms_smart_queue_active', true);
+      
+      print('📱 Queued ${remainingRecipients.length} additional SMS messages');
+      print('📱 They will be processed when you return to the app after sending the current SMS');
+      
+      // Mark remaining recipients as queued
+      for (final recipient in remainingRecipients) {
+        results[recipient] = true; // Mark as "processed" (queued)
+      }
+    }
+
+    print('=== SMART QUEUE SMS INITIAL PROCESSING COMPLETE ===');
+    return results;
+  }
+
+  // Process the next SMS in the smart queue WITH EMAIL HANDLING
+  static Future<bool> processNextQueuedSMS() async {
+    final prefs = await SharedPreferences.getInstance();
+    
+    final recipients = prefs.getStringList('sms_smart_queue_recipients') ?? [];
+    final message = prefs.getString('sms_smart_queue_message') ?? '';
+    final currentIndex = prefs.getInt('sms_smart_queue_current_index') ?? 0;
+    final isActive = prefs.getBool('sms_smart_queue_active') ?? false;
+
+    if (!isActive || recipients.isEmpty || currentIndex >= recipients.length) {
+      print('No more SMS in smart queue');
+      await _clearSmartSMSQueue();
+      
+      // Check if there are pending emails to process
+      await _processPendingEmailsAfterSMS();
+      return false;
+    }
+
+    final recipient = recipients[currentIndex];
+    print('📱 Processing queued SMS ${currentIndex + 1} of ${recipients.length}: $recipient');
+
+    final success = await sendSMS(to: recipient, message: message);
+    
+    // Update index for next SMS
+    final nextIndex = currentIndex + 1;
+    await prefs.setInt('sms_smart_queue_current_index', nextIndex);
+    
+    // Check if this was the last SMS
+    if (nextIndex >= recipients.length) {
+      print('✅ All queued SMS processed');
+      await _clearSmartSMSQueue();
+      
+      // Process pending emails after all SMS are complete
+      await _processPendingEmailsAfterSMS();
+    } else {
+      print('📱 ${recipients.length - nextIndex} SMS remaining in queue');
+    }
+    
+    return success;
+  }
+
+  // Process pending emails after SMS queue is complete
+  static Future<void> _processPendingEmailsAfterSMS() async {
+  try {
+    print('=== CHECKING FOR PENDING EMAILS AFTER SMS ===');
+    
+    final prefs = await SharedPreferences.getInstance();
+    final pendingEmailsJson = prefs.getString('pending_emails_after_sms');
+    
+    print('Pending emails JSON: $pendingEmailsJson');
+    
+    if (pendingEmailsJson != null && pendingEmailsJson.isNotEmpty) {
+      print('📧 Found pending emails, processing now...');
+      
+      // Clear the stored emails first
+      await prefs.remove('pending_emails_after_sms');
+      print('📧 Cleared stored email data');
+      
+      // Parse email data
+      final emailData = Map<String, dynamic>.from(jsonDecode(pendingEmailsJson));
+      print('📧 Parsed email data: $emailData');
+      
+      final emailAddressesJson = emailData['emailAddresses'] ?? '[]';
+      print('📧 Email addresses JSON from storage: $emailAddressesJson');
+      
+      final List<dynamic> emailsList = jsonDecode(emailAddressesJson);
+      final List<String> emailAddresses = emailsList.map((email) => email.toString()).toList();
+      
+      print('📧 Parsed email addresses: $emailAddresses');
+      
+      final description = emailData['description'] ?? 'Reminder';
+      final memoContent = emailData['memoContent'] ?? '';
+      final hasValidAttachment = emailData['hasValidAttachment'] ?? false;
+      
+      print('📧 Email details - Description: $description, Content: $memoContent, Has attachment: $hasValidAttachment');
+      
+      if (emailAddresses.isNotEmpty) {
+        print('📧 Processing ${emailAddresses.length} pending emails');
+        
+        // Small delay before processing emails
+        print('📧 Waiting 2 seconds before opening email client...');
+        await Future.delayed(Duration(seconds: 2));
+        
+        // Load attachment if needed
+        Uint8List? attachmentData;
+        String? attachmentFileName;
+        AttachmentType? attachmentType;
+        
+        if (hasValidAttachment) {
+          final attachmentFilePath = emailData['attachmentFilePath'];
+          attachmentFileName = emailData['attachmentFileName'];
+          final attachmentTypeString = emailData['attachmentType'];
+          
+          print('📧 Loading attachment: $attachmentFilePath, $attachmentFileName, $attachmentTypeString');
+          
+          if (attachmentFilePath != null && attachmentFileName != null) {
+            try {
+              attachmentData = await AttachmentStorageService.loadAttachmentFromPath(attachmentFilePath);
+              
+              if (attachmentData != null) {
+                print('📧 Attachment loaded successfully: ${attachmentData.length} bytes');
+              
+                if (attachmentTypeString != null) {
+                  switch (attachmentTypeString) {
+                    case 'AttachmentType.image':
+                      attachmentType = AttachmentType.image;
+                      break;
+                    case 'AttachmentType.video':
+                      attachmentType = AttachmentType.video;
+                      break;
+                    case 'AttachmentType.document':
+                      attachmentType = AttachmentType.document;
+                      break;
+                    default:
+                      attachmentType = AttachmentStorageService.getAttachmentTypeFromPath(attachmentFilePath);
+                  }
+                }
+              } else {
+                print('📧 Failed to load attachment data');
+              }
+            } catch (e) {
+              print('❌ Error loading attachment for email: $e');
+            }
+          }
+        }
+        
+        // Process emails
+        print('📧 Creating email service and sending emails...');
+        final emailService = EmailService();
+        
+        try {
+          print('📧 Calling sendEmailToMultipleRecipients...');
+          final success = await emailService.sendEmailToMultipleRecipients(
+            recipients: emailAddresses,
+            subject: 'MemrE Reminder: $description',
+            body: 'Reminder for your MemrE:\n\n$description\n\n$memoContent',
+            attachmentData: attachmentData,
+            attachmentFileName: attachmentFileName,
+            attachmentType: attachmentType,
+          );
+          
+          if (success) {
+            print('✅ Pending emails processed successfully');
+          } else {
+            print('❌ Failed to process pending emails');
+          }
+        } catch (e) {
+          print('❌ Error processing pending emails: $e');
+          print('Stack trace: ${StackTrace.current}');
+        }
+      } else {
+        print('📧 No email addresses found in pending data');
+      }
+    } else {
+      print('📧 No pending emails found after SMS completion');
+    }
+  } catch (e) {
+    print('❌ Error in _processPendingEmailsAfterSMS: $e');
+    print('Stack trace: ${StackTrace.current}');
+  }
+}
+
+  // Get smart queue status
+  static Future<Map<String, dynamic>> getSmartSMSQueueStatus() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    return {
+      'isActive': prefs.getBool('sms_smart_queue_active') ?? false,
+      'recipients': prefs.getStringList('sms_smart_queue_recipients') ?? [],
+      'currentIndex': prefs.getInt('sms_smart_queue_current_index') ?? 0,
+      'message': prefs.getString('sms_smart_queue_message') ?? '',
+    };
+  }
+
+  // Clear the smart SMS queue
+  static Future<void> _clearSmartSMSQueue() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('sms_smart_queue_recipients');
+    await prefs.remove('sms_smart_queue_message');
+    await prefs.remove('sms_smart_queue_current_index');
+    await prefs.remove('sms_smart_queue_active');
+    print('Smart SMS queue cleared');
+  }
+
+  // ORIGINAL QUEUE METHODS:
+
   static Future<Map<String, bool>> _processSMSQueue() async {
     final results = <String, bool>{};
     final prefs = await SharedPreferences.getInstance();
@@ -189,18 +471,31 @@ class PlatformSMSService {
     print('SMS queue cleared');
   }
 
-  // Call this when app comes to foreground to continue SMS queue
+  // Enhanced resume method that handles both queue types
   static Future<void> resumePendingSMS() async {
+    print('=== RESUMING PENDING SMS ===');
+    
+    // Check for smart queue first
     final prefs = await SharedPreferences.getInstance();
+    final smartQueueActive = prefs.getBool('sms_smart_queue_active') ?? false;
+    
+    if (smartQueueActive) {
+      print('Found active smart SMS queue, processing next SMS...');
+      await Future.delayed(Duration(milliseconds: 500)); // Small delay
+      await processNextQueuedSMS();
+      return;
+    }
+    
+    // If no SMS queue, check for pending emails
+    await _processPendingEmailsAfterSMS();
+    
+    // Fall back to original queue logic
     final isActive = prefs.getBool('sms_queue_active') ?? false;
     final recipients = prefs.getStringList('sms_queue_recipients');
 
     if (isActive && recipients != null && recipients.isNotEmpty) {
-      print('Resuming pending SMS queue...');
-
-      // Small delay to ensure app is fully active
+      print('Found active original SMS queue, processing...');
       await Future.delayed(Duration(milliseconds: 1000));
-
       await _processSMSQueue();
     } else {
       print('No active SMS queue found');

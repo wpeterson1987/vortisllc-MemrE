@@ -122,7 +122,7 @@ Future<void> _processNotificationSafely(Map<String, String?> payload) async {
   }
 }
 
-// Process notifications immediately when tapped - WITH FILE-BASED ATTACHMENT SUPPORT
+// Process notifications immediately when tapped - WITH IMPROVED ORDERING
 Future<void> _processNotificationImmediately(
     Map<String, String?> payload) async {
   try {
@@ -207,75 +207,101 @@ Future<void> _processNotificationImmediately(
     // Small delay to ensure everything is ready
     await Future.delayed(Duration(milliseconds: 500));
 
-    // Process emails with attachment support
-    if (hasEmails) {
-      try {
-        final emailsJson = payload['emailAddresses'] ?? '[]';
-        print('Emails JSON: $emailsJson');
-
-        final List<dynamic> emailsList = jsonDecode(emailsJson);
-        print('✓ Processing ${emailsList.length} email notifications');
-
-        final emailService = EmailService();
-
-        // Send emails one by one WITH ATTACHMENTS
-        for (int i = 0; i < emailsList.length; i++) {
-          final email = emailsList[i].toString();
-          print(
-              '📧 Opening email app for ${i + 1} of ${emailsList.length}: $email');
-
-          if (hasValidAttachment && attachmentData != null) {
-            print(
-                '📎 Including attachment: $attachmentFileName (${attachmentData.length} bytes)');
-          }
-
-          try {
-            await emailService.sendEmail(
-              to: email,
-              subject: 'MemrE Reminder: $description',
-              body: 'Reminder for your MemrE:\n\n$description\n\n$memoContent',
-              // Include attachment data loaded from file:
-              attachmentData: attachmentData,
-              attachmentFileName: attachmentFileName,
-              attachmentType: attachmentType,
-            );
-            print('✅ Email service call completed for: $email');
-          } catch (emailError) {
-            print('❌ Email service error for $email: $emailError');
-          }
-
-          // Delay between emails
-          if (i < emailsList.length - 1) {
-            print('⏳ Waiting 3 seconds before next email...');
-            await Future.delayed(Duration(seconds: 3));
-          }
-        }
-
-        print(
-            '✓ All emails processed ${hasValidAttachment ? "WITH" : "WITHOUT"} attachments');
-      } catch (emailProcessingError) {
-        print('❌ Error processing emails: $emailProcessingError');
-        print('Stack trace: ${StackTrace.current}');
-      }
+    // IMPROVED: Better handling for mixed notifications with more debugging
+    if (hasEmails && hasSMS) {
+      print('=== BOTH EMAIL AND SMS DETECTED - USING SMART PROCESSING ===');
+      
+      // Get email data from payload
+      final emailsJson = payload['emailAddresses'] ?? '[]';
+      print('📧 Email addresses JSON: $emailsJson');
+      
+      // Store email data for later processing (after all SMS are sent)
+      final emailDataToStore = {
+        'emailAddresses': emailsJson,
+        'description': description,
+        'memoContent': memoContent,
+        'hasValidAttachment': hasValidAttachment,
+        'attachmentFilePath': payload['attachmentFilePath'],
+        'attachmentFileName': payload['attachmentFileName'],
+        'attachmentType': payload['attachmentType'],
+      };
+      
+      print('📧 Storing email data: $emailDataToStore');
+      
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('pending_emails_after_sms', jsonEncode(emailDataToStore));
+      
+      // Verify the data was stored
+      final storedData = prefs.getString('pending_emails_after_sms');
+      print('📧 Verified stored email data: $storedData');
+      
+      print('📧 Email data stored for processing after SMS queue completes');
+      
+      // Process SMS first and ONLY SMS
+      await _processSMSNotifications(payload, description, memoContent);
+      
+      // Don't process emails immediately - they'll be processed when SMS queue is complete
+      
+    } else if (hasEmails) {
+      // Only emails
+      await _processEmailNotifications(
+        payload, 
+        description, 
+        memoContent, 
+        attachmentData, 
+        attachmentFileName, 
+        attachmentType,
+        hasValidAttachment
+      );
+      
+    } else if (hasSMS) {
+      // Only SMS
+      await _processSMSNotifications(payload, description, memoContent);
     }
 
-    // Process SMS immediately (FIXED)
-    if (hasSMS) {
-      final phoneNumbersJson = payload['phoneNumbers'] ?? '[]';
-      final List<dynamic> phoneNumbersList = jsonDecode(phoneNumbersJson);
-      final List<String> phoneNumbers =
-          phoneNumbersList.map((phone) => phone.toString()).toList();
+    print('=== NOTIFICATION PROCESSING COMPLETE ===');
+  } catch (e) {
+    print('✗ Error processing notification immediately: $e');
+    print('Stack trace: ${StackTrace.current}');
+  }
+}
 
-      print(
-          '✓ Processing ${phoneNumbers.length} SMS notifications IMMEDIATELY');
+// Separate SMS processing function
+Future<void> _processSMSNotifications(
+    Map<String, String?> payload, 
+    String description, 
+    String memoContent) async {
+  try {
+    final phoneNumbersJson = payload['phoneNumbers'] ?? '[]';
+    final List<dynamic> phoneNumbersList = jsonDecode(phoneNumbersJson);
+    final List<String> phoneNumbers =
+        phoneNumbersList.map((phone) => phone.toString()).toList();
 
-      if (phoneNumbers.isNotEmpty) {
-        print('📱 Processing SMS immediately...');
+    print('✓ Processing ${phoneNumbers.length} SMS notifications');
 
-        final message = 'Reminder: $description\n$memoContent';
-
-        // Use your working queue-based approach
-        final results = await PlatformSMSService.sendBulkSMSWithQueue(
+    if (phoneNumbers.isNotEmpty) {
+      final message = 'Reminder: $description\n$memoContent';
+      
+      if (phoneNumbers.length == 1) {
+        // Single SMS - send immediately
+        print('📱 Sending single SMS to: ${phoneNumbers[0]}');
+        
+        final success = await PlatformSMSService.sendSMS(
+          to: phoneNumbers[0],
+          message: message,
+        );
+        
+        if (success) {
+          print('✅ SMS opened successfully for: ${phoneNumbers[0]}');
+        } else {
+          print('❌ Failed to open SMS for: ${phoneNumbers[0]}');
+        }
+        
+      } else {
+        // Multiple SMS - use improved queue approach
+        print('📱 Processing ${phoneNumbers.length} SMS with smart queue...');
+        
+        final results = await PlatformSMSService.sendBulkSMSWithSmartQueue(
           recipients: phoneNumbers,
           message: message,
         );
@@ -283,22 +309,76 @@ Future<void> _processNotificationImmediately(
         print('SMS processing results: $results');
 
         // Log individual results
-        results.forEach((phone, success) {
-          if (success) {
-            print('✅ SMS app opened successfully for: $phone');
-          } else {
-            print('❌ Failed to open SMS app for: $phone');
-          }
-        });
-
-        print('✓ All SMS processed immediately');
+        final successCount = results.values.where((success) => success).length;
+        print('✅ SMS Summary: $successCount/${results.length} opened successfully');
       }
     }
 
-    print('=== NOTIFICATION PROCESSING COMPLETE ===');
-  } catch (e) {
-    print('✗ Error processing notification immediately: $e');
-    print('Stack trace: ${StackTrace.current}');
+    print('✓ SMS processing complete');
+  } catch (smsProcessingError) {
+    print('❌ Error processing SMS: $smsProcessingError');
+  }
+}
+
+// Separate email processing function
+Future<void> _processEmailNotifications(
+    Map<String, String?> payload,
+    String description,
+    String memoContent,
+    Uint8List? attachmentData,
+    String? attachmentFileName,
+    AttachmentType? attachmentType,
+    bool hasValidAttachment) async {
+  try {
+    final emailsJson = payload['emailAddresses'] ?? '[]';
+    print('Emails JSON: $emailsJson');
+
+    final List<dynamic> emailsList = jsonDecode(emailsJson);
+    print('✓ Processing ${emailsList.length} email notifications');
+
+    if (emailsList.isNotEmpty) {
+      final emailService = EmailService();
+      final List<String> emailAddresses = emailsList.map((email) => email.toString()).toList();
+      
+      print('📧 Attempting to send email to ${emailAddresses.length} recipients');
+      
+      // Try sending to all recipients at once
+      try {
+        final success = await emailService.sendEmailToMultipleRecipients(
+          recipients: emailAddresses,
+          subject: 'MemrE Reminder: $description',
+          body: 'Reminder for your MemrE:\n\n$description\n\n$memoContent',
+          attachmentData: attachmentData,
+          attachmentFileName: attachmentFileName,
+          attachmentType: attachmentType,
+        );
+        
+        if (success) {
+          print('✅ Email client opened with ${emailAddresses.length} recipients');
+        } else {
+          throw Exception('Multiple recipient email failed');
+        }
+        
+      } catch (multipleEmailError) {
+        print('❌ Multiple recipient email error: $multipleEmailError');
+        print('🔄 Falling back to sequential email approach...');
+        
+        final results = await emailService.sendEmailToRecipientsSequentially(
+          recipients: emailAddresses,
+          subject: 'MemrE Reminder: $description',
+          body: 'Reminder for your MemrE:\n\n$description\n\n$memoContent',
+          attachmentData: attachmentData,
+          attachmentFileName: attachmentFileName,
+          attachmentType: attachmentType,
+        );
+        
+        print('Sequential email results: $results');
+      }
+    }
+
+    print('✓ Email processing complete');
+  } catch (emailProcessingError) {
+    print('❌ Error processing emails: $emailProcessingError');
   }
 }
 
@@ -386,14 +466,106 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    super.didChangeAppLifecycleState(state);
+  super.didChangeAppLifecycleState(state);
+  
+  print('=== APP LIFECYCLE CHANGE: $state ===');
 
-    // When app becomes active, check for pending SMS (backup)
-    if (state == AppLifecycleState.resumed) {
-      print('App resumed - checking for pending SMS');
-      _checkForPendingSMS();
-      // Also check for any pending platform SMS queues
-      PlatformSMSService.resumePendingSMS();
+  // When app becomes active, check for pending SMS
+  if (state == AppLifecycleState.resumed) {
+    print('App resumed - checking for pending SMS with delay...');
+    
+    // Add multiple checks with different delays to ensure we catch the resume
+    Future.delayed(Duration(milliseconds: 500), () {
+      if (mounted) {
+        print('First SMS queue check (500ms delay)');
+        _checkAndProcessSMSQueue();
+      }
+    });
+    
+    Future.delayed(Duration(milliseconds: 1500), () {
+      if (mounted) {
+        print('Second SMS queue check (1.5s delay)');
+        _checkAndProcessSMSQueue();
+      }
+    });
+    
+    Future.delayed(Duration(milliseconds: 3000), () {
+      if (mounted) {
+        print('Third SMS queue check (3s delay)');
+        _checkAndProcessSMSQueue();
+      }
+    });
+    
+    // ADD THIS: Manual email check as backup
+    Future.delayed(Duration(milliseconds: 4000), () {
+      if (mounted) {
+        print('Manual email check (4s delay)');
+        _manuallyCheckForPendingEmails();
+      }
+    });
+  }
+}
+
+  Future<void> _manuallyCheckForPendingEmails() async {
+  try {
+    print('=== MANUAL CHECK FOR PENDING EMAILS ===');
+    final prefs = await SharedPreferences.getInstance();
+    final pendingEmailsJson = prefs.getString('pending_emails_after_sms');
+    
+    if (pendingEmailsJson != null) {
+      print('📧 Found pending emails manually, processing...');
+      await PlatformSMSService.resumePendingSMS(); // This will check emails too
+    } else {
+      print('📧 No pending emails found in manual check');
+    }
+  } catch (e) {
+    print('❌ Error in manual email check: $e');
+  }
+}
+
+
+
+  Future<void> _checkAndProcessSMSQueue() async {
+    try {
+      print('=== CHECKING SMS QUEUE ON RESUME ===');
+      
+      // Check smart queue first
+      final smartQueueStatus = await PlatformSMSService.getSmartSMSQueueStatus();
+      print('Smart queue status: $smartQueueStatus');
+      
+      if (smartQueueStatus['isActive'] == true) {
+        final recipients = smartQueueStatus['recipients'] as List<dynamic>;
+        final currentIndex = smartQueueStatus['currentIndex'] as int;
+        
+        if (recipients.isNotEmpty && currentIndex < recipients.length) {
+          print('🚀 Processing queued SMS: ${currentIndex + 1} of ${recipients.length}');
+          print('Next recipient: ${recipients[currentIndex]}');
+          
+          final success = await PlatformSMSService.processNextQueuedSMS();
+          if (success) {
+            print('✅ Queued SMS processed successfully');
+          } else {
+            print('❌ Failed to process queued SMS');
+          }
+        } else {
+          print('Smart queue is active but no more SMS to process');
+        }
+      } else {
+        print('No active smart SMS queue found');
+        
+        // Check original queue as fallback
+        final originalQueueStatus = await PlatformSMSService.getSMSQueueStatus();
+        if (originalQueueStatus['isActive'] == true) {
+          print('Found original SMS queue, processing...');
+          await PlatformSMSService.resumePendingSMS();
+        }
+      }
+      
+      // Also check for any pending SMS backup
+      await _checkForPendingSMS();
+      
+    } catch (e) {
+      print('❌ Error checking SMS queue: $e');
     }
   }
 
@@ -462,8 +634,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         '/subscription': (context) => const SubscriptionScreen(),
       },
     );
-  }
-}
+  }}
 
 // Wrapper for LoginScreen to handle notification permissions
 class NotificationAwareLoginScreen extends StatefulWidget {
