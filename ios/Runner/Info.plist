@@ -57,6 +57,8 @@
 	<string>MemrE needs notification permission to remind you about your memos.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>SKPaymentTransactionObserver</key>
+	<true/>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

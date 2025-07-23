@@ -1534,5 +1534,307 @@ add_action('init', function() {
         exit;
     }
 });
+// Add REST API endpoints for app registration
+add_action('rest_api_init', function () {
+    // User registration endpoint that triggers Ultimate Member hooks
+    register_rest_route('memre/v1', '/register-user', array(
+        'methods' => 'POST',
+        'callback' => 'memre_register_user_with_tables',
+        'permission_callback' => '__return_true',
+    ));
+    
+    // Ensure user tables exist endpoint
+    register_rest_route('memre/v1', '/user/(?P<user_id>\d+)/ensure-tables', array(
+        'methods' => 'POST',
+        'callback' => 'memre_ensure_user_tables',
+        'permission_callback' => 'memre_check_user_permission',
+        'args' => array(
+            'user_id' => array(
+                'validate_callback' => function($param) {
+                    return is_numeric($param);
+                }
+            ),
+        ),
+    ));
+});
 
+/**
+ * Register user through Ultimate Member system to ensure table creation
+ */
+function memre_register_user_with_tables($request) {
+    try {
+        $params = $request->get_json_params();
+        
+        $username = sanitize_text_field($params['username'] ?? '');
+        $email = sanitize_email($params['email'] ?? '');
+        $password = $params['password'] ?? '';
+        $display_name = sanitize_text_field($params['display_name'] ?? $username);
+        
+        error_log("=== MEMRE APP REGISTRATION ===");
+        error_log("Username: $username");
+        error_log("Email: $email");
+        error_log("Display Name: $display_name");
+        
+        // Validate required fields
+        if (empty($username) || empty($email) || empty($password)) {
+            return new WP_Error(
+                'missing_fields',
+                'Username, email, and password are required',
+                array('status' => 400)
+            );
+        }
+        
+        // Check if user already exists
+        if (username_exists($username) || email_exists($email)) {
+            return new WP_Error(
+                'user_exists',
+                'Username or email already exists',
+                array('status' => 409)
+            );
+        }
+        
+        // Create WordPress user
+        $user_data = array(
+            'user_login' => $username,
+            'user_email' => $email,
+            'user_pass' => $password,
+            'display_name' => $display_name,
+            'role' => 'subscriber',
+        );
+        
+        $user_id = wp_insert_user($user_data);
+        
+        if (is_wp_error($user_id)) {
+            error_log("WordPress user creation failed: " . $user_id->get_error_message());
+            return new WP_Error(
+                'registration_failed',
+                $user_id->get_error_message(),
+                array('status' => 400)
+            );
+        }
+        
+        error_log("WordPress user created successfully: ID $user_id");
+        
+        // IMPORTANT: Trigger Ultimate Member registration completion
+        // This ensures your database tables get created
+        $tables_created = false;
+        
+        try {
+            // Method 1: Direct function call if UM is loaded
+            if (function_exists('um_fetch_user')) {
+                error_log("Triggering Ultimate Member registration completion...");
+                
+                // Set up UM user data
+                um_fetch_user($user_id);
+                
+                // Trigger the UM registration complete action
+                do_action('um_registration_complete', $user_id, array());
+                
+                // Also trigger your custom table creation
+                memre_handle_complete_user_registration($user_id);
+                
+                $tables_created = true;
+                error_log("Ultimate Member registration completion triggered successfully");
+            } else {
+                // Method 2: Direct table creation if UM not available
+                error_log("Ultimate Member not available, creating tables directly...");
+                memre_handle_complete_user_registration($user_id);
+                $tables_created = true;
+            }
+            
+            // Set up free trial
+            update_user_meta($user_id, 'is_free_trial', true);
+            update_user_meta($user_id, 'registration_date', current_time('Y-m-d H:i:s'));
+            update_user_meta($user_id, 'registration_source', 'mobile_app');
+            
+            // Verify tables were created
+            $table_verification = memre_verify_user_tables($user_id);
+            
+            error_log("Table creation result: " . ($tables_created ? 'SUCCESS' : 'FAILED'));
+            error_log("Table verification: " . print_r($table_verification, true));
+            
+        } catch (Exception $e) {
+            error_log("Error during table creation: " . $e->getMessage());
+            // Don't fail registration if table creation fails - we can retry later
+        }
+        
+        return array(
+            'success' => true,
+            'user_id' => $user_id,
+            'message' => 'User registered successfully',
+            'tables_created' => $tables_created,
+            'table_verification' => $table_verification ?? array(),
+        );
+        
+    } catch (Exception $e) {
+        error_log("Registration exception: " . $e->getMessage());
+        return new WP_Error(
+            'registration_error',
+            'Registration failed: ' . $e->getMessage(),
+            array('status' => 500)
+        );
+    }
+}
+
+/**
+ * Ensure user tables exist (create if missing)
+ */
+function memre_ensure_user_tables($request) {
+    $user_id = (int) $request['user_id'];
+    
+    try {
+        error_log("=== ENSURING TABLES FOR USER $user_id ===");
+        
+        // First, verify if tables already exist
+        $existing_tables = memre_verify_user_tables($user_id);
+        
+        if ($existing_tables['all_exist']) {
+            error_log("All tables already exist for user $user_id");
+            return array(
+                'success' => true,
+                'tables_created' => false,
+                'tables_verified' => true,
+                'existing_tables' => $existing_tables,
+            );
+        }
+        
+        error_log("Some tables missing for user $user_id, creating...");
+        
+        // Create missing tables
+        $creation_result = memre_handle_complete_user_registration($user_id);
+        
+        // Verify creation
+        $verification_result = memre_verify_user_tables($user_id);
+        
+        // Set up trial if not already set
+        $is_trial = get_user_meta($user_id, 'is_free_trial', true);
+        if (!$is_trial) {
+            update_user_meta($user_id, 'is_free_trial', true);
+            update_user_meta($user_id, 'registration_date', current_time('Y-m-d H:i:s'));
+        }
+        
+        error_log("Tables creation completed for user $user_id");
+        
+        return array(
+            'success' => true,
+            'tables_created' => true,
+            'tables_verified' => $verification_result['all_exist'],
+            'verification_details' => $verification_result,
+        );
+        
+    } catch (Exception $e) {
+        error_log("Error ensuring tables for user $user_id: " . $e->getMessage());
+        return new WP_Error(
+            'table_creation_error',
+            'Failed to create user tables: ' . $e->getMessage(),
+            array('status' => 500)
+        );
+    }
+}
+
+/**
+ * Verify user tables exist in both database systems
+ */
+function memre_verify_user_tables($user_id) {
+    $result = array(
+        'all_exist' => false,
+        'old_system_tables' => array(),
+        'new_system_tables' => array(),
+        'old_system_count' => 0,
+        'new_system_count' => 0,
+    );
+    
+    try {
+        // Check old system tables (WordPress database)
+        $old_system_tables = array(
+            "user_{$user_id}_memo",
+            "user_{$user_id}_reminder", 
+            "user_{$user_id}_memo_reminder",
+            "user_{$user_id}_attachment"
+        );
+        
+        global $wpdb;
+        foreach ($old_system_tables as $table) {
+            $table_exists = $wpdb->get_var("SHOW TABLES LIKE '$table'") == $table;
+            $result['old_system_tables'][$table] = $table_exists;
+            if ($table_exists) $result['old_system_count']++;
+        }
+        
+        // Check new system tables (MemrE database)
+        $new_system_tables = memre_get_user_tables($user_id);
+        $result['new_system_tables'] = $new_system_tables;
+        $result['new_system_count'] = count($new_system_tables);
+        
+        // Consider tables complete if we have at least the memo table in old system
+        $has_memo_table = $result['old_system_tables']["user_{$user_id}_memo"] ?? false;
+        $result['all_exist'] = $has_memo_table;
+        
+        error_log("Table verification for user $user_id: " . print_r($result, true));
+        
+    } catch (Exception $e) {
+        error_log("Error verifying tables for user $user_id: " . $e->getMessage());
+    }
+    
+    return $result;
+}
+
+/**
+ * Check permission for user-specific endpoints
+ */
+function memre_check_user_permission($request) {
+    $user_id = (int) $request['user_id'];
+    $current_user_id = get_current_user_id();
+    
+    // Allow if current user is the same user or an admin
+    if ($current_user_id == $user_id || current_user_can('manage_options')) {
+        return true;
+    }
+    
+    return new WP_Error(
+        'forbidden',
+        'You do not have permission to access this user\'s data',
+        array('status' => 403)
+    );
+}
+
+/**
+ * Enhanced subscription status endpoint that includes table verification
+ */
+function memre_subscription_status_with_tables_api($request) {
+    $user_id = (int) $request['user_id'];
+    
+    // Get standard subscription status
+    $status = get_user_subscription_status($user_id);
+    
+    // Add table verification
+    $table_status = memre_verify_user_tables($user_id);
+    
+    return array(
+        'user_id' => $user_id,
+        'subscription_tier' => $status['subscription_tier'],
+        'trial_active' => $status['trial_active'],
+        'trial_days_remaining' => $status['trial_days_remaining'],
+        'premium_active' => $status['premium_active'],
+        'trial_expired' => $status['trial_expired'],
+        'tables_verified' => $table_status['all_exist'],
+        'table_details' => $table_status,
+        'timestamp' => time()
+    );
+}
+
+// Update the existing subscription endpoint to include table verification
+add_action('rest_api_init', function () {
+    register_rest_route('memre/v1', '/user/(?P<user_id>\d+)/subscription-with-tables', array(
+        'methods' => 'GET',
+        'callback' => 'memre_subscription_status_with_tables_api',
+        'permission_callback' => 'memre_check_user_permission',
+        'args' => array(
+            'user_id' => array(
+                'validate_callback' => function($param) {
+                    return is_numeric($param);
+                }
+            ),
+        ),
+    ));
+});
 ?>

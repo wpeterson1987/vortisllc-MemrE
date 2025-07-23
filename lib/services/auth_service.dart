@@ -1,27 +1,195 @@
-import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'wordpress_registration_service.dart';
 
 class AuthService {
-  final String baseUrl = 'https://memre.vortisllc.com/wp-json';
-  static const String _userIdKey = 'userId';
-  static const String _usernameKey = 'username';
-  String? _jwtToken;
+  final WordPressRegistrationService _registrationService = WordPressRegistrationService();
+  
+  static const String _userDataKey = 'user_data';
 
-  String? get jwtToken => _jwtToken;
+  /// Register new user through WordPress Ultimate Member system
+  Future<Map<String, dynamic>> register({
+    required String username,
+    required String email,
+    required String password,
+    required String displayName,
+  }) async {
+    try {
+      print('=== AUTH SERVICE REGISTRATION ===');
+      print('Registering user: $username');
 
+      // Use WordPress registration service to ensure tables are created
+      final result = await _registrationService.registerUser(
+        username: username,
+        email: email,
+        password: password,
+        displayName: displayName,
+      );
+
+      if (result['success']) {
+        print('✅ WordPress registration successful');
+        print('✅ Tables created: ${result['tables_created']}');
+        
+        // If registration successful, automatically log in to get JWT token
+        final loginResult = await login(username, password);
+        
+        if (loginResult['success']) {
+          return {
+            'success': true,
+            'user_id': result['user_id'],
+            'message': 'Account created successfully',
+            'tables_created': result['tables_created'],
+            'auto_login_success': true,
+          };
+        } else {
+          // Registration succeeded but login failed - still success
+          return {
+            'success': true,
+            'user_id': result['user_id'],
+            'message': 'Account created successfully. Please log in.',
+            'tables_created': result['tables_created'],
+            'auto_login_success': false,
+          };
+        }
+      } else {
+        return result;
+      }
+    } catch (e) {
+      print('❌ Registration error: $e');
+      return {
+        'success': false,
+        'message': 'Registration failed: $e',
+      };
+    }
+  }
+
+  /// Login user and verify database tables
+  Future<Map<String, dynamic>> login(String username, String password) async {
+    try {
+      print('=== AUTH SERVICE LOGIN ===');
+      print('Logging in user: $username');
+
+      // Use WordPress login service that also verifies tables
+      final result = await _registrationService.loginUser(
+        username: username,
+        password: password,
+      );
+
+      print('WordPress login result: $result'); // ADD THIS DEBUG LINE
+
+      if (result['success']) {
+        print('✅ WordPress login successful');
+        print('✅ Tables verified: ${result['tables_verified']}');
+        
+        // Save user data to local storage
+        final userData = {
+          'user_id': result['user_id'],
+          'username': username,
+          'jwt_token': result['jwt_token'],
+          'user_email': result['user_email'],
+          'user_display_name': result['user_display_name'],
+          'tables_verified': result['tables_verified'],
+          'tables_created': result['tables_created'],
+        };
+
+        print('Saving user data: $userData'); // ADD THIS DEBUG LINE
+        await _saveUserData(userData);
+        
+        return {
+          'success': true,
+          'user_id': result['user_id'],
+          'message': 'Login successful',
+          'tables_verified': result['tables_verified'],
+        };
+      } else {
+        print('❌ WordPress login failed: ${result['message']}');
+        return result;
+      }
+    } catch (e) {
+      print('❌ Login error: $e');
+      return {
+        'success': false,
+        'message': 'Login failed: $e',
+      };
+    }
+  }
+
+  /// Check if user tables exist and create if missing
+  Future<bool> ensureUserTablesExist() async {
+    try {
+      final userId = await getLoggedInUserId();
+      if (userId == null) return false;
+
+      print('=== ENSURING USER TABLES EXIST ===');
+      print('User ID: $userId');
+
+      // This will be called through the subscription provider
+      // The WordPress endpoint will handle table creation
+      return true;
+    } catch (e) {
+      print('❌ Error ensuring tables exist: $e');
+      return false;
+    }
+  }
+
+  /// Save user data to local storage
+  Future<void> _saveUserData(Map<String, dynamic> userData) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final userDataJson = jsonEncode(userData);
+      await prefs.setString(_userDataKey, userDataJson);
+      print('✅ User data saved to local storage');
+      
+      // Also save individual fields for easier access
+      await prefs.setString('jwt_token', userData['jwt_token'] ?? '');
+      await prefs.setString('user_id', userData['user_id']?.toString() ?? '');
+      await prefs.setString('user_email', userData['user_email'] ?? '');
+      
+      print('✅ Individual fields saved to SharedPreferences');
+    } catch (e) {
+      print('❌ Error saving user data: $e');
+    }
+  }
+
+  /// Get saved user data from local storage
+  Future<Map<String, dynamic>?> getSavedUserData() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final userDataString = prefs.getString(_userDataKey);
+      
+      if (userDataString != null) {
+        print('Retrieved user data string from SharedPreferences: $userDataString');
+        final userData = Map<String, dynamic>.from(jsonDecode(userDataString));
+        print('Parsed user data: $userData');
+        return userData;
+      } else {
+        print('No user data found in SharedPreferences');
+        return null;
+      }
+    } catch (e) {
+      print('Error retrieving user data: $e');
+      return null;
+    }
+  }
+
+  /// Get logged in user ID
   Future<int?> getLoggedInUserId() async {
     try {
       final userData = await getSavedUserData();
       print('Getting logged in user ID, userData: $userData');
-
-      if (userData != null && userData.containsKey('user_id')) {
+      
+      if (userData != null && userData['user_id'] != null) {
         final userId = userData['user_id'];
         print('Returning user ID: $userId (type: ${userId.runtimeType})');
-        return userId is int ? userId : int.tryParse(userId.toString());
+        
+        if (userId is int) {
+          return userId;
+        } else if (userId is String) {
+          return int.tryParse(userId);
+        }
       }
-
-      print('No user ID found in saved user data');
+      
+      print('No valid user ID found');
       return null;
     } catch (e) {
       print('Error getting logged in user ID: $e');
@@ -29,182 +197,49 @@ class AuthService {
     }
   }
 
-  Future<Map<String, dynamic>> login(
-      String username, String password, bool rememberMe) async {
-    try {
-      print('Attempting login with JWT for user: $username');
-
-      // Authenticate with WordPress JWT endpoint
-      final tokenResponse = await http.post(
-        Uri.parse('https://memre.vortisllc.com/wp-json/jwt-auth/v1/token'),
-        body: {
-          'username': username,
-          'password': password,
-        },
-      );
-
-      print('JWT response status: ${tokenResponse.statusCode}');
-
-      if (tokenResponse.statusCode != 200) {
-        print('JWT auth failed: ${tokenResponse.body}');
-        throw Exception('Authentication failed');
-      }
-
-      // Parse the token response
-      final tokenData = json.decode(tokenResponse.body);
-      print('JWT response data: $tokenData'); // Log the full response
-
-      // Log each key-value pair in the response to find the user ID
-      tokenData.forEach((key, value) {
-        print('JWT data - $key: $value');
-        if (value is Map) {
-          value.forEach((subKey, subValue) {
-            print('  - $subKey: $subValue');
-          });
-        }
-      });
-
-      final String jwtToken = tokenData['token'];
-
-      // Look for the user ID in the token data
-      int? userId;
-
-      // Check if user ID is in the response
-      if (tokenData.containsKey('data') && tokenData['data'] is Map) {
-        print('Checking data field for user info');
-        final data = tokenData['data'];
-
-        if (data.containsKey('user') && data['user'] is Map) {
-          final user = data['user'];
-          if (user.containsKey('id')) {
-            userId = int.tryParse(user['id'].toString());
-            print('Found user ID in data.user.id: $userId');
-          }
-        }
-      }
-
-      // Try other common locations
-      if (userId == null && tokenData.containsKey('user_id')) {
-        userId = int.tryParse(tokenData['user_id'].toString());
-        print('Found user ID in user_id field: $userId');
-      }
-
-      if (userId == null && tokenData.containsKey('id')) {
-        userId = int.tryParse(tokenData['id'].toString());
-        print('Found user ID in id field: $userId');
-      }
-
-      // If we still don't have a user ID, we need to figure out another way
-      if (userId == null) {
-        print('WARNING: Could not extract user ID from JWT response');
-
-        // Try to get the user ID from a direct API call
-        final userResponse = await http.get(
-          Uri.parse('https://memre.vortisllc.com/wp-json/wp/v2/users/me'),
-          headers: {
-            'Authorization': 'Bearer $jwtToken',
-            'Content-Type': 'application/json',
-          },
-        );
-
-        print('User data response status: ${userResponse.statusCode}');
-
-        if (userResponse.statusCode == 200) {
-          final userData = json.decode(userResponse.body);
-          print('User data response: $userData');
-
-          if (userData.containsKey('id')) {
-            userId = int.tryParse(userData['id'].toString());
-            print('Found user ID from /users/me endpoint: $userId');
-          }
-        }
-      }
-
-      // If we still don't have a user ID after all attempts
-      if (userId == null) {
-        print(
-            'ERROR: Failed to determine user ID after multiple attempts. Using placeholder ID.');
-        throw Exception('Could not determine user ID');
-      }
-
-      // Create user data object with the JWT token
-      final userData = {
-        'user_id': userId,
-        'username': username,
-        'email': tokenData['user_email'] ?? '',
-        'display_name': tokenData['user_display_name'] ?? username,
-        'jwt_token': jwtToken,
-      };
-
-      print('Login successful for user: $username (ID: $userId)');
-
-      // Save user data if remember me is checked
-      if (rememberMe) {
-        await _saveUserData(userData);
-      }
-
-      return userData;
-    } catch (e) {
-      print('Login error: $e');
-      rethrow;
-    }
+  /// Check if user is logged in
+  Future<bool> isLoggedIn() async {
+    final userId = await getLoggedInUserId();
+    return userId != null;
   }
 
-  Future<void> _saveUserData(Map<String, dynamic> userData) async {
-    try {
-      print('Saving user data to SharedPreferences: $userData');
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('user_data', json.encode(userData));
-      print('User data saved successfully');
-    } catch (e) {
-      print('Error saving user data: $e');
-      throw Exception('Failed to save user data: $e');
-    }
-  }
-
+  /// Logout user
   Future<void> logout() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.remove('user_data');
-      // Any other cleanup needed
+      await prefs.remove(_userDataKey);
+      await prefs.remove('jwt_token');
+      await prefs.remove('user_id');
+      await prefs.remove('user_email');
+      print('✅ User logged out successfully');
     } catch (e) {
-      print('Error during logout: $e');
+      print('❌ Error during logout: $e');
     }
   }
 
-  Future<Map<String, dynamic>?> getSavedUserData() async {
+  /// Get JWT token for API calls
+  Future<String?> getJwtToken() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final userDataString = prefs.getString('user_data');
-      print(
-          'Retrieved user data string from SharedPreferences: $userDataString');
-
-      if (userDataString != null) {
-        final userData = json.decode(userDataString);
-        print('Parsed user data: $userData');
-        return userData;
-      }
-      print('No user data found in SharedPreferences');
-      return null;
+      final userData = await getSavedUserData();
+      return userData?['jwt_token'];
     } catch (e) {
-      print('Error getting saved user data: $e');
+      print('Error getting JWT token: $e');
       return null;
     }
   }
 
-  Future<bool> requestPasswordReset(String email) async {
+  /// Verify JWT token is still valid
+  Future<bool> verifyToken() async {
     try {
-      final response = await http.post(
-        Uri.parse('$baseUrl/memre-app/v1/reset-password'),
-        body: {
-          'email': email,
-        },
-      );
+      final token = await getJwtToken();
+      if (token == null) return false;
 
-      return response.statusCode == 200;
+      // You can add token validation logic here
+      // For now, just check if token exists
+      return true;
     } catch (e) {
-      print('Password reset request error: $e');
-      throw Exception('Failed to request password reset');
+      print('Error verifying token: $e');
+      return false;
     }
   }
 }

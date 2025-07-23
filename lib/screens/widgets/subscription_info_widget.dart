@@ -321,7 +321,7 @@ class SubscriptionInfoWidget extends StatelessWidget {
       if (await canLaunchUrl(Uri.parse(url))) {
         await launchUrl(
           Uri.parse(url),
-          mode: LaunchMode.inAppWebView,
+          mode: LaunchMode.externalApplication,
           webViewConfiguration: const WebViewConfiguration(
             enableJavaScript: true,
           ),

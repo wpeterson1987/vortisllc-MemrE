@@ -6,14 +6,13 @@ import 'auth_service.dart';
 
 class SubscriptionProvider with ChangeNotifier {
   final AuthService _authService = AuthService();
-  // Updated to use the new WordPress API endpoints we created
   final String baseUrl = 'https://memre.vortisllc.com/wp-json/memre/v1';
 
   bool _isLoading = false;
   bool _hasError = false;
   String _errorMessage = '';
 
-  // Updated fields to match WordPress API
+  // Subscription status fields
   String _subscriptionTier = 'Trial';
   bool _trialActive = true;
   int _trialDaysRemaining = 14;
@@ -23,12 +22,16 @@ class SubscriptionProvider with ChangeNotifier {
   String? _registrationDate;
   String? _stripeCustomerId;
   Map<String, bool> _features = {};
+  
+  // NEW: Track subscription source
+  String _subscriptionSource = 'none'; // 'stripe', 'apple_iap', 'none'
+  bool _hasIAPSubscription = false;
+  bool _hasStripeSubscription = false;
 
   // Getters
   bool get isLoading => _isLoading;
   bool get hasError => _hasError;
   String get errorMessage => _errorMessage;
-
   String get subscriptionTier => _subscriptionTier;
   bool get trialActive => _trialActive;
   int get trialDaysRemaining => _trialDaysRemaining;
@@ -37,13 +40,23 @@ class SubscriptionProvider with ChangeNotifier {
   DateTime? get trialEndDate => _trialEndDate;
   String? get registrationDate => _registrationDate;
   Map<String, bool> get features => _features;
+  
+  // NEW: Subscription source getters
+  String get subscriptionSource => _subscriptionSource;
+  bool get hasIAPSubscription => _hasIAPSubscription;
+  bool get hasStripeSubscription => _hasStripeSubscription;
+  bool get hasActiveSubscription => _hasIAPSubscription || _hasStripeSubscription;
 
   // Updated: Check if user has access to the app
-  bool get hasAppAccess => trialActive || premiumActive;
+  bool get hasAppAccess => trialActive || premiumActive || hasActiveSubscription;
 
   // Updated: More specific status messages
   String get statusMessage {
-    if (premiumActive) {
+    if (_hasIAPSubscription) {
+      return 'MemrE Premium (App Store)';
+    } else if (_hasStripeSubscription) {
+      return 'MemrE Premium (Website)';
+    } else if (premiumActive) {
       return 'MemrE Premium Active';
     } else if (trialActive) {
       return 'Free Trial - $trialDaysRemaining days remaining';
@@ -56,34 +69,32 @@ class SubscriptionProvider with ChangeNotifier {
 
   // Get status color for UI
   Color get statusColor {
-    if (premiumActive) return Colors.green;
+    if (hasActiveSubscription || premiumActive) return Colors.green;
     if (trialActive && trialDaysRemaining > 3) return Colors.blue;
     if (trialActive && trialDaysRemaining <= 3) return Colors.orange;
     return Colors.red;
   }
 
-  // NEW: Clear all subscription state data
-  Future<void> clearState() async {
-    print('🧹 Clearing subscription state...');
+  // NEW: Get trial urgency level for UI (FIXES THE ERROR)
+  String get trialUrgency {
+    if (!trialActive) return 'expired';
+    if (trialDaysRemaining <= 1) return 'critical';
+    if (trialDaysRemaining <= 3) return 'urgent';
+    if (trialDaysRemaining <= 7) return 'warning';
+    return 'normal';
+  }
 
-    // Reset all state variables to their initial/default values
-    _isLoading = false;
-    _hasError = false;
-    _errorMessage = '';
+  // NEW: Determine what subscription options to show
+  bool get shouldShowIAPOptions {
+    // Show IAP options if:
+    // 1. User has no active subscription, OR
+    // 2. User was registered through the app (not website)
+    return !hasActiveSubscription || _subscriptionSource == 'none';
+  }
 
-    // Reset subscription data to defaults (new user state)
-    _subscriptionTier = 'Trial';
-    _trialActive = true;
-    _trialDaysRemaining = 14;
-    _premiumActive = false;
-    _trialExpired = false;
-    _trialEndDate = null;
-    _registrationDate = null;
-    _stripeCustomerId = null;
-    _features = {};
-
-    print('✅ Subscription state cleared');
-    notifyListeners();
+  bool get shouldShowWebsiteManagement {
+    // Show website management if user has Stripe subscription
+    return _hasStripeSubscription;
   }
 
   // Initialize subscription data
@@ -122,12 +133,11 @@ class SubscriptionProvider with ChangeNotifier {
         throw Exception('User not logged in');
       }
 
-      // Call the new WordPress API endpoint
+      // Call the WordPress API endpoint
       final subscriptionData = await getSubscriptionStatus(userId);
-
       print('📦 Received subscription data: $subscriptionData');
 
-      // Update state based on new API response structure
+      // Update state based on API response
       _subscriptionTier = subscriptionData['subscription_tier'] ?? 'Trial';
       _trialActive = subscriptionData['trial_active'] ?? false;
       _trialDaysRemaining = subscriptionData['trial_days_remaining'] ?? 0;
@@ -135,6 +145,18 @@ class SubscriptionProvider with ChangeNotifier {
       _trialExpired = subscriptionData['trial_expired'] ?? false;
       _registrationDate = subscriptionData['registration_date'];
       _stripeCustomerId = subscriptionData['stripe_customer_id'];
+
+      // NEW: Handle subscription source detection
+      _hasStripeSubscription = subscriptionData['has_stripe_subscription'] ?? false;
+      _hasIAPSubscription = subscriptionData['has_iap_subscription'] ?? false;
+      
+      if (_hasStripeSubscription) {
+        _subscriptionSource = 'stripe';
+      } else if (_hasIAPSubscription) {
+        _subscriptionSource = 'apple_iap';
+      } else {
+        _subscriptionSource = 'none';
+      }
 
       // Parse trial end date if provided
       if (subscriptionData['trial_end_date'] != null) {
@@ -155,7 +177,9 @@ class SubscriptionProvider with ChangeNotifier {
       print('- Trial active: $_trialActive');
       print('- Trial days remaining: $_trialDaysRemaining');
       print('- Premium active: $_premiumActive');
-      print('- Trial expired: $_trialExpired');
+      print('- Has Stripe subscription: $_hasStripeSubscription');
+      print('- Has IAP subscription: $_hasIAPSubscription');
+      print('- Subscription source: $_subscriptionSource');
       print('- Has app access: $hasAppAccess');
     } catch (e) {
       _hasError = true;
@@ -172,7 +196,7 @@ class SubscriptionProvider with ChangeNotifier {
     return !hasAppAccess;
   }
 
-  // Updated: API call to get subscription status using new WordPress endpoint
+  // API call to get subscription status
   Future<Map<String, dynamic>> getSubscriptionStatus(int userId) async {
     try {
       final url = '$baseUrl/user/$userId/subscription';
@@ -224,7 +248,35 @@ class SubscriptionProvider with ChangeNotifier {
     }
   }
 
-  // Updated: Get authentication headers with JWT token
+  // NEW: Update subscription after IAP purchase
+  Future<void> updateIAPSubscription(String productId, String transactionId) async {
+    try {
+      final userId = await _authService.getLoggedInUserId();
+      if (userId == null) return;
+
+      final url = '$baseUrl/user/$userId/iap-subscription';
+      final headers = await _getAuthHeaders();
+
+      final response = await http.post(
+        Uri.parse(url),
+        headers: headers,
+        body: json.encode({
+          'product_id': productId,
+          'transaction_id': transactionId,
+          'platform': 'ios',
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        // Refresh subscription data
+        await refreshSubscriptionData();
+      }
+    } catch (e) {
+      print('Error updating IAP subscription: $e');
+    }
+  }
+
+  // Get authentication headers with JWT token
   Future<Map<String, String>> _getAuthHeaders() async {
     final userData = await _authService.getSavedUserData();
 
@@ -241,7 +293,7 @@ class SubscriptionProvider with ChangeNotifier {
     };
   }
 
-  // UPDATED: Get URL for subscription management (EXTERNAL WEBSITE ONLY)
+  // UPDATED: Get URL for subscription management (REVENUE OPTIMIZED)
   Future<String> getSubscriptionUpgradeUrl() async {
     try {
       final userId = await _authService.getLoggedInUserId();
@@ -249,10 +301,10 @@ class SubscriptionProvider with ChangeNotifier {
         throw Exception('User not logged in');
       }
 
-      // Always return the website URL - no in-app payment processing
+      // ALWAYS return the website URL for revenue optimization
       final baseWebsiteUrl = 'https://memre.vortisllc.com/account/';
       
-      // Add parameters to help with user experience
+      // Add parameters to help with user experience and tracking
       final websiteUrl = '$baseWebsiteUrl?source=ios_app&user_id=$userId&action=upgrade';
       
       return websiteUrl;
@@ -263,62 +315,76 @@ class SubscriptionProvider with ChangeNotifier {
     }
   }
 
-  // NEW: Get account management URL (for existing subscribers)
-  Future<String> getAccountManagementUrl() async {
+  // NEW: Get website management URL (only for Stripe subscribers)
+  Future<String> getWebsiteManagementUrl() async {
     try {
       final userId = await _authService.getLoggedInUserId();
       if (userId == null) {
         throw Exception('User not logged in');
       }
 
-      // Always return the website URL for account management
-      final baseWebsiteUrl = 'https://memre.vortisllc.com/account/';
-      
-      // Add parameters to help with user experience
-      final websiteUrl = '$baseWebsiteUrl?source=ios_app&user_id=$userId&action=manage';
-      
-      return websiteUrl;
+      return 'https://memre.vortisllc.com/account/?user_id=$userId&source=app&action=manage';
     } catch (e) {
-      print('Error getting account management URL: $e');
-      // Fallback to default URL
-      return 'https://memre.vortisllc.com/account/?source=ios_app&action=manage';
+      print('Error getting website management URL: $e');
+      return 'https://memre.vortisllc.com/account/';
     }
   }
 
-  // New: Force refresh subscription status
+  // NEW: Clear all subscription state data
+  Future<void> clearState() async {
+    print('🧹 Clearing subscription state...');
+
+    _isLoading = false;
+    _hasError = false;
+    _errorMessage = '';
+    _subscriptionTier = 'Trial';
+    _trialActive = true;
+    _trialDaysRemaining = 14;
+    _premiumActive = false;
+    _trialExpired = false;
+    _trialEndDate = null;
+    _registrationDate = null;
+    _stripeCustomerId = null;
+    _features = {};
+    _subscriptionSource = 'none';
+    _hasIAPSubscription = false;
+    _hasStripeSubscription = false;
+
+    print('✅ Subscription state cleared');
+    notifyListeners();
+  }
+
+  // Force refresh subscription status
   Future<void> forceRefresh() async {
     await refreshSubscriptionData();
   }
 
-  // New: Check specific feature access
+  // Check specific feature access
   bool hasFeatureAccess(String featureName) {
     return _features[featureName] ?? hasAppAccess;
   }
 
-  // New: Get trial urgency level for UI
-  String get trialUrgency {
-    if (!trialActive) return 'expired';
-    if (trialDaysRemaining <= 1) return 'critical';
-    if (trialDaysRemaining <= 3) return 'urgent';
-    if (trialDaysRemaining <= 7) return 'warning';
-    return 'normal';
-  }
-
   // UPDATED: Get appropriate call-to-action text (Apple compliant)
   String get ctaText {
-    if (premiumActive) return 'Manage on Website';
-    if (trialActive) return 'Subscribe on Website';
-    return 'Subscribe on Website';
+    if (hasActiveSubscription) {
+      return _hasStripeSubscription ? 'Manage on Website' : 'Manage Subscription';
+    } else if (trialActive) {
+      return 'Subscribe Now';
+    } else {
+      return 'Subscribe Now';
+    }
   }
 
   // NEW: Get compliance-friendly button text
   String get subscriptionButtonText {
-    if (premiumActive) {
-      return 'Manage Subscription on Website';
+    if (hasActiveSubscription) {
+      return _hasStripeSubscription 
+          ? 'Manage Subscription on Website'
+          : 'Manage Subscription';
     } else if (trialActive) {
-      return 'Subscribe on Website - \$8.99/month';
+      return 'Subscribe for \$8.99/month';
     } else {
-      return 'Subscribe on Website - \$8.99/month';
+      return 'Subscribe for \$8.99/month';
     }
   }
 }
